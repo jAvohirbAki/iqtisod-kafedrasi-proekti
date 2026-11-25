@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { KpiStatus, NotificationType } from "@prisma/client";
+import { IssueSeverity, IssueSource, KpiStatus, NotificationType } from "@prisma/client";
 import { z } from "zod";
 import { requireApiAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateKpiScore } from "@/lib/domain";
 import { saveUploadedFile } from "@/lib/storage";
 import { createNotification, recordAuditLog } from "@/lib/audit";
+import { reportSystemIssue } from "@/lib/monitoring";
 
 const kpiSchema = z.object({
   criterionId: z.string().min(1),
@@ -126,6 +127,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ kpiEntry }, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "KPI saqlashda xatolik";
+    await reportSystemIssue({
+      title: "KPI yuklash/saqlash xatoligi",
+      message,
+      severity: IssueSeverity.WARNING,
+      source: IssueSource.API_SERVER,
+      route: "/api/teacher/kpi",
+      method: "POST",
+      statusCode: 400,
+      stackTrace: err instanceof Error ? err.stack : null,
+      reportedByUserId: user.id,
+    });
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

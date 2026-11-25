@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import { IssueSeverity, IssueSource } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { SESSION_COOKIE_NAME, signSessionToken } from "@/lib/auth";
 import { getDashboardPath } from "@/lib/domain";
+import { reportSystemIssue } from "@/lib/monitoring";
 
 const loginSchema = z.object({
   email: z.string().email("To'g'ri email manzil kiriting"),
@@ -76,6 +78,16 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (err) {
     console.error("Login error:", err);
+    await reportSystemIssue({
+      title: "Autentifikatsiya server xatoligi",
+      message: err instanceof Error ? err.message : "Noma'lum login xatoligi",
+      severity: IssueSeverity.CRITICAL,
+      source: IssueSource.AUTH,
+      route: "/api/auth/login",
+      method: "POST",
+      statusCode: 500,
+      stackTrace: err instanceof Error ? err.stack : null,
+    });
     return NextResponse.json(
       { error: "Tizimga kirishda server xatoligi yuz berdi" },
       { status: 500 }

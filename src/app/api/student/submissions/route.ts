@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { NotificationType, SubmissionStatus } from "@prisma/client";
+import { IssueSeverity, IssueSource, NotificationType, SubmissionStatus } from "@prisma/client";
 import { requireApiAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { saveUploadedFile } from "@/lib/storage";
 import { createNotification } from "@/lib/audit";
+import { reportSystemIssue } from "@/lib/monitoring";
 
 export async function POST(request: NextRequest) {
   const { user, errorResponse } = await requireApiAuth(["STUDENT"]);
@@ -132,6 +133,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ submission }, { status: existing ? 200 : 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Yuklashda xatolik";
+    await reportSystemIssue({
+      title: "Talaba topshirig'ini yuklash xatoligi",
+      message,
+      severity: IssueSeverity.WARNING,
+      source: IssueSource.API_SERVER,
+      route: "/api/student/submissions",
+      method: "POST",
+      statusCode: 400,
+      stackTrace: err instanceof Error ? err.stack : null,
+      reportedByUserId: user.id,
+    });
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

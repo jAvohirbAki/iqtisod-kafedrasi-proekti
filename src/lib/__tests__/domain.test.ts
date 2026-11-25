@@ -7,6 +7,7 @@ import {
 } from "../domain";
 import { signSessionToken, verifySessionToken } from "../auth";
 import { resolveSafeUploadPath, validateUploadFile } from "../storage";
+import { buildIssueFingerprint, pickHigherSeverity } from "../monitoring";
 
 describe("Domain calculations", () => {
   it("calculates KPI score and respects maxPoints cap", () => {
@@ -55,9 +56,43 @@ describe("Domain calculations", () => {
   });
 
   it("returns correct dashboard routes for each role", () => {
+    expect(getDashboardPath("ADMIN")).toBe("/admin");
     expect(getDashboardPath("DEAN")).toBe("/dean");
     expect(getDashboardPath("TEACHER")).toBe("/teacher");
     expect(getDashboardPath("STUDENT")).toBe("/student");
+  });
+});
+
+describe("System monitoring helpers", () => {
+  it("generates deterministic fingerprints for identical issues", () => {
+    const a = buildIssueFingerprint({
+      source: "API_SERVER",
+      route: "/api/teacher/kpi",
+      method: "post",
+      title: "  Upload failed ",
+    });
+    const b = buildIssueFingerprint({
+      source: "API_SERVER",
+      route: "/api/teacher/kpi",
+      method: "POST",
+      title: "upload failed",
+    });
+    const c = buildIssueFingerprint({
+      source: "DATABASE",
+      route: "/api/teacher/kpi",
+      method: "POST",
+      title: "upload failed",
+    });
+
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+    expect(a).toHaveLength(16);
+  });
+
+  it("picks the higher issue severity when escalating", () => {
+    expect(pickHigherSeverity("INFO", "CRITICAL")).toBe("CRITICAL");
+    expect(pickHigherSeverity("ERROR", "WARNING")).toBe("ERROR");
+    expect(pickHigherSeverity("WARNING", "WARNING")).toBe("WARNING");
   });
 });
 

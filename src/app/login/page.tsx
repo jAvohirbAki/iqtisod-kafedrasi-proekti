@@ -6,6 +6,11 @@ import { GraduationCap, KeyRound, Loader2, Mail, ShieldAlert } from "lucide-reac
 
 const DEMO_ACCOUNTS = [
   {
+    label: "Tizim administratori",
+    email: "admin@kafedra.uz",
+    roleHint: "Xatoliklar monitoringi, tizim diagnostikasi va foydalanuvchilar",
+  },
+  {
     label: "Dekanat / Kafedra mudiri",
     email: "dekanat@kafedra.uz",
     roleHint: "KPI tasdiqlash, guruh va fanlar boshqaruvi",

@@ -1,5 +1,17 @@
-import { PrismaClient, Role, ControlType, SubmissionStatus, KpiBlock, KpiStatus, NotificationType } from "@prisma/client";
+import {
+  PrismaClient,
+  Role,
+  ControlType,
+  SubmissionStatus,
+  KpiBlock,
+  KpiStatus,
+  NotificationType,
+  IssueSeverity,
+  IssueSource,
+  IssueStatus,
+} from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { buildIssueFingerprint } from "../src/lib/monitoring";
 
 const prisma = new PrismaClient();
 
@@ -45,7 +57,21 @@ async function main() {
     },
   });
 
-  // 3. Users (Dean, Teachers, Students)
+  // 3. Users (Admin, Dean, Teachers, Students)
+  const admin = await prisma.user.upsert({
+    where: { email: "admin@kafedra.uz" },
+    update: {},
+    create: {
+      email: "admin@kafedra.uz",
+      passwordHash,
+      fullName: "Xolmatov Azizbek Shukhratovich",
+      role: Role.ADMIN,
+      academicTitle: "Tizim administratori (DevOps / IT)",
+      phone: "+998 90 100 00 00",
+      departmentId: department.id,
+    },
+  });
+
   const dean = await prisma.user.upsert({
     where: { email: "dekanat@kafedra.uz" },
     update: {},
@@ -535,6 +561,81 @@ async function main() {
           reason: "Amaliy ish mezonlari bo'yicha baholandi.",
         },
       ],
+    });
+  }
+
+  // System Issues (idempotent seed if table is empty)
+  const existingIssues = await prisma.systemIssue.count();
+  if (existingIssues === 0) {
+    const now = new Date();
+    await prisma.systemIssue.createMany({
+      data: [
+        {
+          title: "Fayl yuklash hajmi chegarasidan oshgan urinish",
+          message: "Talaba 25 MB hajmdagi ZIP arxiv yuklashga urindi (maksimal chegara: 20 MB).",
+          severity: IssueSeverity.WARNING,
+          source: IssueSource.API_SERVER,
+          status: IssueStatus.OPEN,
+          route: "/api/student/submissions",
+          method: "POST",
+          statusCode: 400,
+          fingerprint: buildIssueFingerprint({
+            source: IssueSource.API_SERVER,
+            route: "/api/student/submissions",
+            method: "POST",
+            title: "Fayl yuklash hajmi chegarasidan oshgan urinish",
+          }),
+          occurrenceCount: 3,
+          lastOccurredAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+          reportedByUserId: students[0]?.id ?? null,
+        },
+        {
+          title: "Kafedra KPI CSV eksport so'rovi sekinlashuvi",
+          message: "KPI hisoboti generatsiya vaqti 1200 ms dan oshdi; indeksatsiya tekshiruvi tavsiya etiladi.",
+          severity: IssueSeverity.INFO,
+          source: IssueSource.DATABASE,
+          status: IssueStatus.ACKNOWLEDGED,
+          route: "/api/dean/reports/kpi-csv",
+          method: "GET",
+          statusCode: 200,
+          fingerprint: buildIssueFingerprint({
+            source: IssueSource.DATABASE,
+            route: "/api/dean/reports/kpi-csv",
+            method: "GET",
+            title: "Kafedra KPI CSV eksport so'rovi sekinlashuvi",
+          }),
+          occurrenceCount: 1,
+          lastOccurredAt: new Date(now.getTime() - 6 * 60 * 60 * 1000),
+        },
+        {
+          title: "JWT sessiya kaliti standart dev rejimda",
+          message: "Production muhitga chiqarishdan oldin AUTH_SECRET ni kuchli tasodifiy qiymatga almashtiring.",
+          severity: IssueSeverity.WARNING,
+          source: IssueSource.AUTH,
+          status: IssueStatus.OPEN,
+          route: "/api/auth/login",
+          method: "POST",
+          statusCode: 200,
+          fingerprint: buildIssueFingerprint({
+            source: IssueSource.AUTH,
+            route: "/api/auth/login",
+            method: "POST",
+            title: "JWT sessiya kaliti standart dev rejimda",
+          }),
+          occurrenceCount: 1,
+          lastOccurredAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+        },
+      ],
+    });
+
+    await prisma.notification.create({
+      data: {
+        userId: admin.id,
+        type: NotificationType.SYSTEM_ALERT,
+        title: "Tizim monitoringi faollashtirildi",
+        message: "Administrator panelida 2 ta ochiq va 1 ta ko'rib chiqilayotgan ogohlantirish mavjud.",
+        link: "/admin?tab=issues",
+      },
     });
   }
 

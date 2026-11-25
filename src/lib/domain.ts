@@ -1,4 +1,13 @@
-import { ControlType, KpiBlock, KpiStatus, Role, SubmissionStatus } from "@prisma/client";
+import {
+  ControlType,
+  IssueSeverity,
+  IssueSource,
+  IssueStatus,
+  KpiBlock,
+  KpiStatus,
+  Role,
+  SubmissionStatus,
+} from "@prisma/client";
 
 /**
  * Calculate KPI score for a given criterion and quantity, respecting optional max cap.
@@ -55,9 +64,32 @@ export function getUzbekGradeLabel(percentage: number): {
 }
 
 export const ROLE_LABELS: Record<Role, string> = {
+  ADMIN: "Tizim administratori",
   DEAN: "Dekanat / Kafedra mudiri",
   TEACHER: "O'qituvchi",
   STUDENT: "Talaba",
+};
+
+export const ISSUE_SEVERITY_LABELS: Record<IssueSeverity, string> = {
+  INFO: "Ma'lumot",
+  WARNING: "Ogohlantirish",
+  ERROR: "Xatolik",
+  CRITICAL: "Kritik muammo",
+};
+
+export const ISSUE_SOURCE_LABELS: Record<IssueSource, string> = {
+  API_SERVER: "Backend API",
+  DATABASE: "Ma'lumotlar bazasi",
+  CLIENT_UI: "Foydalanuvchi interfeysi",
+  HEALTH_CHECK: "Tizim diagnostikasi",
+  AUTH: "Autentifikatsiya",
+};
+
+export const ISSUE_STATUS_LABELS: Record<IssueStatus, string> = {
+  OPEN: "Ochiq",
+  ACKNOWLEDGED: "Ko'rib chiqilmoqda",
+  RESOLVED: "Hal qilindi",
+  IGNORED: "E'tiborsiz qoldirilgan",
 };
 
 export const CONTROL_TYPE_LABELS: Record<ControlType, string> = {
@@ -94,6 +126,8 @@ export const KPI_STATUS_LABELS: Record<KpiStatus, string> = {
 
 export function getDashboardPath(role: Role): string {
   switch (role) {
+    case "ADMIN":
+      return "/admin";
     case "DEAN":
       return "/dean";
     case "TEACHER":

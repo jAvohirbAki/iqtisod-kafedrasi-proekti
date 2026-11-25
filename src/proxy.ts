@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { getDashboardPath } from "@/lib/domain";
 
-const PROTECTED_PREFIXES = ["/dean", "/teacher", "/student"];
+const PROTECTED_PREFIXES = ["/admin", "/dean", "/teacher", "/student"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -36,5 +36,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dean/:path*", "/teacher/:path*", "/student/:path*", "/login"],
+  matcher: ["/admin/:path*", "/dean/:path*", "/teacher/:path*", "/student/:path*", "/login"],
 };

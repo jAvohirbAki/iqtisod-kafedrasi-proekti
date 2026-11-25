@@ -8,6 +8,7 @@ datasource db {
 }
 
 enum Role {
+  ADMIN
   DEAN
   TEACHER
   STUDENT
@@ -48,7 +49,30 @@ enum NotificationType {
   SUBMISSION_GRADED
   KPI_SUBMITTED
   KPI_REVIEWED
+  SYSTEM_ALERT
   SYSTEM
+}
+
+enum IssueSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+enum IssueSource {
+  API_SERVER
+  DATABASE
+  CLIENT_UI
+  HEALTH_CHECK
+  AUTH
+}
+
+enum IssueStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  IGNORED
 }
 
 model Department {
@@ -100,6 +124,8 @@ model User {
   reviewedKpis      KpiEntry[]       @relation("ReviewedBy")
   auditLogs         AuditLog[]       @relation("ActorLogs")
   notifications     Notification[]
+  reportedIssues    SystemIssue[]    @relation("ReportedIssues")
+  resolvedIssues    SystemIssue[]    @relation("ResolvedIssues")
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
@@ -278,4 +304,34 @@ model Notification {
   createdAt DateTime         @default(now())
 
   @@index([userId, isRead])
+}
+
+model SystemIssue {
+  id               String        @id @default(cuid())
+  title            String
+  message          String
+  severity         IssueSeverity @default(ERROR)
+  source           IssueSource   @default(API_SERVER)
+  status           IssueStatus   @default(OPEN)
+  route            String?
+  method           String?
+  statusCode       Int?
+  stackTrace       String?
+  metadata         String?
+  fingerprint      String
+  occurrenceCount  Int           @default(1)
+  lastOccurredAt   DateTime      @default(now())
+  reportedByUserId String?
+  resolvedById     String?
+  resolutionNote   String?
+  resolvedAt       DateTime?
+  reportedBy       User?         @relation("ReportedIssues", fields: [reportedByUserId], references: [id], onDelete: SetNull)
+  resolvedBy       User?         @relation("ResolvedIssues", fields: [resolvedById], references: [id], onDelete: SetNull)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([status])
+  @@index([severity])
+  @@index([fingerprint])
+  @@index([lastOccurredAt])
 }

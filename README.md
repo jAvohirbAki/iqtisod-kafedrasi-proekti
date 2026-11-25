@@ -38,6 +38,12 @@ cp .env.example .env
 
 # 3. Lokal PostgreSQL serverni ishga tushirish (Docker bo'lmasa Prisma Dev orqali)
 npx prisma dev -d -n kafedra
+# Prisma chiqargan postgres:// DATABASE_URL qiymatini .env fayliga yozing.
+# Lokal Prisma Dev uchun localhost o'rniga 127.0.0.1 ishlating.
+# Ulanish parametrlarini pgbouncer=true, connection_limit=1,
+# connect_timeout=5 va pool_timeout=10 qilib sozlang.
+# Avval yaratilgan baza to'xtagan bo'lsa, uni qayta ishga tushiring:
+# npx prisma dev start kafedra
 # Yoki Docker bilan:
 # docker compose up -d
 
@@ -45,8 +51,9 @@ npx prisma dev -d -n kafedra
 npm run db:push
 npm run db:seed
 
-# 5. Loyihani ishga tushirish
-npm run dev
+# 5. Portalni mahalliy ishlatish
+npm run build
+npm start -- --hostname 127.0.0.1
 ```
 
 ## Demo hisoblar (Parol: `Kafedra2026!`)

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { IssueSeverity, IssueSource } from "@prisma/client";
+import { IssueSeverity, IssueSource, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { SESSION_COOKIE_NAME, signSessionToken } from "@/lib/auth";
@@ -8,13 +8,13 @@ import { getDashboardPath } from "@/lib/domain";
 import { reportSystemIssue } from "@/lib/monitoring";
 
 const loginSchema = z.object({
-  email: z.string().email("To'g'ri email manzil kiriting"),
+  email: z.string().trim().email("To'g'ri email manzil kiriting").toLowerCase(),
   password: z.string().min(4, "Parol kamida 4 ta belgidan iborat bo'lishi kerak"),
 });
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
     const parsed = loginSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
@@ -23,9 +23,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const email = parsed.data.email.trim().toLowerCase();
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email: parsed.data.email },
       select: {
         id: true,
         email: true,
@@ -78,6 +77,17 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (err) {
     console.error("Login error:", err);
+    if (
+      err instanceof Prisma.PrismaClientInitializationError ||
+      (err instanceof Prisma.PrismaClientKnownRequestError &&
+        ["P1001", "P1002", "P1017", "P2024"].includes(err.code))
+    ) {
+      return NextResponse.json(
+        { error: "Ma’lumotlar bazasi vaqtincha ishlamayapti. Birozdan so‘ng qayta urinib ko‘ring." },
+        { status: 503 }
+      );
+    }
+
     await reportSystemIssue({
       title: "Autentifikatsiya server xatoligi",
       message: err instanceof Error ? err.message : "Noma'lum login xatoligi",

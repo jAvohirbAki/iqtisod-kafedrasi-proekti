@@ -18,7 +18,7 @@ export const metadata: Metadata = {
     "OTM kafedralari uchun o'quv vazifalarini topshirish, baholash va o'qituvchi KPI tizimi",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="uz"

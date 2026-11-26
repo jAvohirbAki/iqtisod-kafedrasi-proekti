@@ -27,6 +27,7 @@ enum SubmissionStatus {
   RESUBMITTED
   GRADED
   RETURNED
+  IN_REVIEW
 }
 
 enum KpiBlock {
@@ -47,6 +48,7 @@ enum NotificationType {
   ASSIGNMENT_CREATED
   SUBMISSION_RECEIVED
   SUBMISSION_GRADED
+  SUBMISSION_RETURNED
   KPI_SUBMITTED
   KPI_REVIEWED
   SYSTEM_ALERT
@@ -120,6 +122,7 @@ model User {
   createdAssignments Assignment[]    @relation("TeacherAssignments")
   submissions       Submission[]     @relation("StudentSubmissions")
   gradedSubmissions Submission[]     @relation("GradedBy")
+  submissionGrades  SubmissionGrade[]
   kpiEntries        KpiEntry[]       @relation("TeacherKpis")
   reviewedKpis      KpiEntry[]       @relation("ReviewedBy")
   auditLogs         AuditLog[]       @relation("ActorLogs")
@@ -172,19 +175,29 @@ model Assignment {
   latePenaltyPct Int           @default(10)
   attachmentName String?
   attachmentPath String?
+  attachment     AssignmentAttachment?
   subjectId      String
   groupId        String
   teacherId      String
+  publishRequestId String?
   subject        Subject       @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   group          AcademicGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   teacher        User          @relation("TeacherAssignments", fields: [teacherId], references: [id], onDelete: Cascade)
   submissions    Submission[]
+  notifications  Notification[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
   @@index([groupId])
   @@index([subjectId])
   @@index([teacherId])
+  @@unique([teacherId, publishRequestId])
+}
+
+model AssignmentAttachment {
+  assignmentId String     @id
+  content      Bytes
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
 }
 
 model Submission {
@@ -204,10 +217,13 @@ model Submission {
   gradedById  String?
   submittedAt DateTime            @default(now())
   gradedAt    DateTime?
+  gradingRevision Int             @default(0)
   assignment  Assignment          @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   student     User                @relation("StudentSubmissions", fields: [studentId], references: [id], onDelete: Cascade)
   gradedBy    User?               @relation("GradedBy", fields: [gradedById], references: [id], onDelete: SetNull)
   versions    SubmissionVersion[]
+  files       SubmissionFile[]
+  grades      SubmissionGrade[]
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 
@@ -219,6 +235,7 @@ model SubmissionVersion {
   id           String     @id @default(cuid())
   submissionId String
   version      Int
+  requestId    String?
   comment      String?
   externalUrl  String?
   fileName     String?
@@ -229,6 +246,37 @@ model SubmissionVersion {
   createdAt    DateTime   @default(now())
 
   @@index([submissionId])
+  @@unique([submissionId, requestId])
+}
+
+model SubmissionFile {
+  path         String     @id
+  submissionId String
+  name         String
+  mimeType     String
+  size         Int
+  content      Bytes
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+}
+
+model SubmissionGrade {
+  id                 String           @id @default(cuid())
+  submissionId       String
+  submissionVersion  Int
+  revision           Int
+  status             SubmissionStatus
+  score              Float?
+  rawScore           Float?
+  appliedLatePenalty Boolean?
+  feedback           String?
+  graderId           String?
+  gradedAt           DateTime         @default(now())
+  submission         Submission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  grader             User?            @relation(fields: [graderId], references: [id], onDelete: SetNull)
+
+  @@unique([submissionId, revision])
 }
 
 model KpiCriterion {
@@ -295,15 +343,19 @@ model AuditLog {
 model Notification {
   id        String           @id @default(cuid())
   userId    String
+  assignmentId String?
   type      NotificationType
   title     String
   message   String
   link      String?
   isRead    Boolean          @default(false)
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignment Assignment?    @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
   createdAt DateTime         @default(now())
 
   @@index([userId, isRead])
+  @@index([userId, createdAt, id])
+  @@index([assignmentId])
 }
 
 model SystemIssue {

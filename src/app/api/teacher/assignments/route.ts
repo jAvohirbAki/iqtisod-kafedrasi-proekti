@@ -1,125 +1,164 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { ControlType, NotificationType } from "@prisma/client";
+import { ControlType, NotificationType, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { requireApiAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { saveUploadedFile } from "@/lib/storage";
-import { createNotification, recordAuditLog } from "@/lib/audit";
+import { validateUploadFile } from "@/lib/storage";
+import { recordAuditLog } from "@/lib/audit";
+import { assignmentNotificationLink } from "@/lib/notification-links";
+import { readRequestId } from "@/lib/request-id";
 
 const assignmentSchema = z.object({
   title: z.string().trim().min(3, "Sarlavha kamida 3 ta belgi bo'lishi kerak"),
   description: z.string().trim().min(10, "Vazifa sharti kamida 10 ta belgi bo'lishi kerak"),
-  subjectId: z.string().min(1),
-  groupId: z.string().min(1),
-  controlType: z.nativeEnum(ControlType),
-  maxScore: z.coerce.number().int().min(1).max(100),
-  dueDate: z.string().min(1),
+  subjectId: z.string({ error: "Fanni tanlang" }).min(1, "Fanni tanlang"),
+  groupId: z.string({ error: "Guruhni tanlang" }).min(1, "Guruhni tanlang"),
+  controlType: z.nativeEnum(ControlType, { error: "Nazorat turini tanlang" }),
+  maxScore: z.coerce.number({ error: "Maksimal ballni raqam bilan kiriting" }).int("Ball butun son bo'lishi kerak")
+    .min(1, "Maksimal ball 1 dan kam bo'lmasligi kerak").max(100, "Maksimal ball 100 dan oshmasligi kerak"),
+  dueDate: z.iso.datetime({ offset: true, error: "Muddat sanasi noto'g'ri" }),
   allowLate: z.boolean().default(true),
-  latePenaltyPct: z.coerce.number().int().min(0).max(100).default(10),
+  latePenaltyPct: z.coerce.number({ error: "Jarima foizini raqam bilan kiriting" }).int("Jarima foizi butun son bo'lishi kerak")
+    .min(0, "Jarima foizi manfiy bo'lmasligi kerak").max(100, "Jarima foizi 100 dan oshmasligi kerak").default(10),
 });
+
+async function replayPublication(teacherId: string, requestId: string) {
+  const assignment = await prisma.assignment.findUnique({
+    where: { teacherId_publishRequestId: { teacherId, publishRequestId: requestId } },
+    omit: { publishRequestId: true },
+  });
+  if (!assignment) return null;
+  const notifiedStudentCount = await prisma.notification.count({
+    where: { assignmentId: assignment.id, type: NotificationType.ASSIGNMENT_CREATED },
+  });
+  return NextResponse.json({ assignment, notifiedStudentCount, replayed: true });
+}
 
 export async function POST(request: NextRequest) {
   const { user, errorResponse } = await requireApiAuth(["TEACHER"]);
   if (errorResponse) return errorResponse;
 
+  const requestId = readRequestId(request);
+  if (requestId === false) {
+    return NextResponse.json({ error: "Yuborish so'rovi identifikatori noto'g'ri" }, { status: 400 });
+  }
+  const formData = await request.formData().catch(() => null);
+  if (!formData) {
+    return NextResponse.json({ error: "Vazifa ma'lumotlari noto'g'ri" }, { status: 400 });
+  }
+
+  const parsed = assignmentSchema.safeParse({
+    title: formData.get("title"),
+    description: formData.get("description"),
+    subjectId: formData.get("subjectId"),
+    groupId: formData.get("groupId"),
+    controlType: formData.get("controlType") ?? "JORIY",
+    maxScore: formData.get("maxScore"),
+    dueDate: formData.get("dueDate"),
+    allowLate: formData.get("allowLate") === "true",
+    latePenaltyPct: formData.get("latePenaltyPct") ?? 10,
+  });
+
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Vazifa ma'lumotlari noto'g'ri" },
+      { status: 400 }
+    );
+  }
+
+  const input = parsed.data;
+  const file = formData.get("attachment");
+  if (file instanceof File) {
+    const error = validateUploadFile(file);
+    if (error) return NextResponse.json({ error }, { status: 400 });
+  } else if (file !== null) {
+    return NextResponse.json({ error: "Metodik fayl noto'g'ri" }, { status: 400 });
+  }
+
   try {
-    const formData = await request.formData();
-    const parsed = assignmentSchema.safeParse({
-      title: formData.get("title"),
-      description: formData.get("description"),
-      subjectId: formData.get("subjectId"),
-      groupId: formData.get("groupId"),
-      controlType: formData.get("controlType") ?? "JORIY",
-      maxScore: formData.get("maxScore"),
-      dueDate: formData.get("dueDate"),
-      allowLate: formData.get("allowLate") === "true",
-      latePenaltyPct: formData.get("latePenaltyPct") ?? 10,
-    });
-
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? "Vazifa ma'lumotlari noto'g'ri" },
-        { status: 400 }
-      );
+    if (requestId) {
+      const replay = await replayPublication(user.id, requestId);
+      if (replay) return replay;
     }
+    const attachment = file instanceof File
+      ? {
+          name: file.name,
+          path: `assignments/${randomUUID()}`,
+          content: new Uint8Array(await file.arrayBuffer()),
+        }
+      : null;
 
-    const teaching = await prisma.subjectTeacher.findUnique({
-      where: {
-        subjectId_teacherId_groupId: {
-          subjectId: parsed.data.subjectId,
-          teacherId: user.id,
-          groupId: parsed.data.groupId,
+    const published = await prisma.$transaction(async (tx) => {
+      const teaching = await tx.subjectTeacher.findUnique({
+        where: {
+          subjectId_teacherId_groupId: {
+            subjectId: input.subjectId,
+            teacherId: user.id,
+            groupId: input.groupId,
+          },
         },
-      },
-      include: { subject: true },
+        select: { subject: { select: { name: true } } },
+      });
+      if (!teaching) return null;
+
+      const assignment = await tx.assignment.create({
+        omit: { publishRequestId: true },
+        data: {
+          ...input,
+          dueDate: new Date(input.dueDate),
+          latePenaltyPct: input.allowLate ? input.latePenaltyPct : 0,
+          teacherId: user.id,
+          publishRequestId: requestId,
+          ...(attachment && {
+            attachmentName: attachment.name,
+            attachmentPath: attachment.path,
+            attachment: { create: { content: attachment.content } },
+          }),
+        },
+      });
+
+      const students = await tx.user.findMany({
+        where: { role: "STUDENT", groupId: assignment.groupId, isActive: true },
+        select: { id: true },
+      });
+
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ASSIGNMENT_CREATED",
+        entityType: "Assignment",
+        entityId: assignment.id,
+        newValue: { title: assignment.title, groupId: assignment.groupId, maxScore: assignment.maxScore },
+      }, tx);
+
+      const notifications = await tx.notification.createMany({
+        data: students.map(({ id }) => ({
+          userId: id,
+          assignmentId: assignment.id,
+          type: NotificationType.ASSIGNMENT_CREATED,
+          title: `Yangi vazifa: ${teaching.subject.name}`,
+          message: `${user.fullName} "${assignment.title}" vazifasini joyladi (max ${assignment.maxScore} ball).`,
+          link: assignmentNotificationLink("STUDENT", assignment.id),
+        })),
+      });
+
+      return { assignment, notifiedStudentCount: notifications.count };
     });
 
-    if (!teaching) {
+    if (!published) {
       return NextResponse.json(
         { error: "Sizga ushbu fan va guruh biriktirilmagan" },
         { status: 403 }
       );
     }
 
-    const dueDate = new Date(parsed.data.dueDate);
-    if (Number.isNaN(dueDate.getTime())) {
-      return NextResponse.json({ error: "Muddat sanasi noto'g'ri" }, { status: 400 });
-    }
-
-    const attachment = formData.get("attachment");
-    let attachmentName: string | null = null;
-    let attachmentPath: string | null = null;
-
-    if (attachment instanceof File && attachment.size > 0) {
-      const saved = await saveUploadedFile(attachment, "assignments");
-      attachmentName = saved.fileName;
-      attachmentPath = saved.filePath;
-    }
-
-    const assignment = await prisma.assignment.create({
-      data: {
-        title: parsed.data.title,
-        description: parsed.data.description,
-        controlType: parsed.data.controlType,
-        maxScore: parsed.data.maxScore,
-        dueDate,
-        allowLate: parsed.data.allowLate,
-        latePenaltyPct: parsed.data.allowLate ? parsed.data.latePenaltyPct : 0,
-        attachmentName,
-        attachmentPath,
-        subjectId: parsed.data.subjectId,
-        groupId: parsed.data.groupId,
-        teacherId: user.id,
-      },
-    });
-
-    const students = await prisma.user.findMany({
-      where: { role: "STUDENT", groupId: parsed.data.groupId, isActive: true },
-      select: { id: true },
-    });
-
-    await Promise.all([
-      recordAuditLog({
-        actorId: user.id,
-        action: "ASSIGNMENT_CREATED",
-        entityType: "Assignment",
-        entityId: assignment.id,
-        newValue: { title: assignment.title, groupId: assignment.groupId, maxScore: assignment.maxScore },
-      }),
-      ...students.map((s) =>
-        createNotification({
-          userId: s.id,
-          type: NotificationType.ASSIGNMENT_CREATED,
-          title: `Yangi vazifa: ${teaching.subject.name}`,
-          message: `${user.fullName} "${assignment.title}" vazifasini joyladi (max ${assignment.maxScore} ball).`,
-          link: "/student",
-        })
-      ),
-    ]);
-
-    return NextResponse.json({ assignment }, { status: 201 });
+    return NextResponse.json(published, { status: 201 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Vazifa yaratishda xatolik";
-    return NextResponse.json({ error: message }, { status: 400 });
+    if (requestId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      const replay = await replayPublication(user.id, requestId);
+      if (replay) return replay;
+    }
+    console.error("Vazifa yaratishda xatolik", err);
+    return NextResponse.json({ error: "Vazifa yaratishda xatolik" }, { status: 500 });
   }
 }

@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   calculateGradedScore,
   calculateKpiScore,
+  canSubmitAssignment,
   getDashboardPath,
+  getSubmissionStatusLabel,
   getUzbekGradeLabel,
 } from "../domain";
 import { signSessionToken, verifySessionToken } from "../auth";
 import { resolveSafeUploadPath, validateUploadFile } from "../storage";
 import { buildIssueFingerprint, pickHigherSeverity } from "../monitoring";
+import { assignmentNotificationLink, notificationLinkForRole } from "../notification-links";
+import { readRequestId } from "../request-id";
 
 describe("Domain calculations", () => {
   it("calculates KPI score and respects maxPoints cap", () => {
@@ -55,11 +59,53 @@ describe("Domain calculations", () => {
     expect(getUzbekGradeLabel(40).grade).toBe(2);
   });
 
+  it("allows a first submission by the deadline and a new version only after return", () => {
+    const dueDate = new Date("2026-11-01T12:00:00Z");
+    const late = new Date("2026-11-01T12:01:00Z");
+    const assignment = { dueDate, allowLate: false };
+    expect(canSubmitAssignment(null, assignment, dueDate)).toBe(true);
+    expect(canSubmitAssignment(null, assignment, late)).toBe(false);
+    expect(canSubmitAssignment(null, { ...assignment, allowLate: true }, late)).toBe(true);
+    expect(canSubmitAssignment("RETURNED", assignment, late)).toBe(true);
+    for (const status of ["SUBMITTED", "RESUBMITTED", "IN_REVIEW", "GRADED"] as const) {
+      expect(canSubmitAssignment(status, assignment, dueDate)).toBe(false);
+    }
+  });
+
+  it("keeps the review and graded statuses visible for late work", () => {
+    expect(getSubmissionStatusLabel(null)).toBe("Topshirilmagan");
+    expect(getSubmissionStatusLabel({ status: "SUBMITTED", isLate: true })).toBe("Kechiktirib topshirilgan");
+    expect(getSubmissionStatusLabel({ status: "IN_REVIEW", isLate: true })).toBe("Tekshirilmoqda");
+    expect(getSubmissionStatusLabel({ status: "GRADED", isLate: true })).toBe("Baholangan");
+  });
+
   it("returns correct dashboard routes for each role", () => {
     expect(getDashboardPath("ADMIN")).toBe("/admin");
     expect(getDashboardPath("DEAN")).toBe("/dean");
     expect(getDashboardPath("TEACHER")).toBe("/teacher");
     expect(getDashboardPath("STUDENT")).toBe("/student");
+  });
+});
+
+describe("Portal notification links and request identifiers", () => {
+  it("builds assignment links for the destination role", () => {
+    expect(assignmentNotificationLink("STUDENT", "a1")).toBe("/student?assignment=a1");
+    expect(assignmentNotificationLink("TEACHER", "a1", "s2")).toBe("/teacher?assignment=a1&tab=grading&submission=s2");
+  });
+
+  it("allows only the recipient's dashboard and rejects external targets", () => {
+    expect(notificationLinkForRole("ADMIN", "/admin?tab=issues")).toBe("/admin?tab=issues");
+    expect(notificationLinkForRole("STUDENT", "/teacher?tab=grading")).toBeNull();
+    expect(notificationLinkForRole("STUDENT", "//example.test/student")).toBeNull();
+    expect(notificationLinkForRole("STUDENT", "/\\example.test/student")).toBeNull();
+  });
+
+  it("accepts an optional UUID idempotency key and normalizes its case", () => {
+    const url = "http://localhost";
+    const valid = new Request(url, { headers: { "Idempotency-Key": "550E8400-E29B-41D4-A716-446655440000" } });
+    expect(readRequestId(valid)).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(readRequestId(new Request(url))).toBeNull();
+    expect(readRequestId(new Request(url, { headers: { "Idempotency-Key": "invalid" } }))).toBe(false);
   });
 });
 

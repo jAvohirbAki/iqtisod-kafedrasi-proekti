@@ -46,7 +46,8 @@ export function LoginForm() {
         setError(data?.error ?? "Kirishda xatolik");
         return;
       }
-      window.location.replace(data?.redirectTo ?? "/");
+      const next = new URLSearchParams(window.location.search).get("next");
+      window.location.replace(next === "/notifications" ? next : data?.redirectTo ?? "/");
     } catch {
       setError("Server bilan aloqa o'rnatib bo'lmadi");
     } finally {

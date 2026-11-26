@@ -1,149 +1,141 @@
 import { NextRequest, NextResponse } from "next/server";
-import { IssueSeverity, IssueSource, NotificationType, SubmissionStatus } from "@prisma/client";
+import { IssueSeverity, IssueSource, NotificationType, Prisma, SubmissionStatus } from "@prisma/client";
 import { requireApiAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { saveUploadedFile } from "@/lib/storage";
 import { createNotification } from "@/lib/audit";
 import { reportSystemIssue } from "@/lib/monitoring";
+import { canSubmitAssignment } from "@/lib/domain";
+import { preserveLegacyGrade } from "@/lib/grading";
+import { prepareSubmissionFile, readSubmissionForm, SubmissionUploadError } from "@/lib/submission-file";
+import { assignmentNotificationLink } from "@/lib/notification-links";
+import { readRequestId } from "@/lib/request-id";
 
 export async function POST(request: NextRequest) {
   const { user, errorResponse } = await requireApiAuth(["STUDENT"]);
   if (errorResponse) return errorResponse;
 
+  const requestId = readRequestId(request);
+  if (requestId === false) {
+    return NextResponse.json({ error: "Yuborish so'rovi identifikatori noto'g'ri" }, { status: 400 });
+  }
+  const now = new Date();
   try {
-    const formData = await request.formData();
+    const formData = await readSubmissionForm(request);
     const assignmentId = String(formData.get("assignmentId") ?? "").trim();
     const comment = String(formData.get("comment") ?? "").trim() || null;
     const externalUrl = String(formData.get("externalUrl") ?? "").trim() || null;
-    const file = formData.get("file");
 
     if (!assignmentId) {
       return NextResponse.json({ error: "Vazifa ID ko'rsatilmagan" }, { status: 400 });
     }
-
+    if (externalUrl && !/^https?:\/\//i.test(externalUrl)) {
+      return NextResponse.json({ error: "Havola http:// yoki https:// bilan boshlanishi kerak" }, { status: 400 });
+    }
     const assignment = await prisma.assignment.findUnique({
       where: { id: assignmentId },
+      select: { id: true, title: true, groupId: true, teacherId: true, dueDate: true, allowLate: true },
     });
     if (!assignment) {
       return NextResponse.json({ error: "Vazifa topilmadi" }, { status: 404 });
     }
     if (!user.groupId || assignment.groupId !== user.groupId) {
-      return NextResponse.json(
-        { error: "Bu vazifa sizning guruhingizga tegishli emas" },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: "Bu vazifa sizning guruhingizga tegishli emas" }, { status: 403 });
     }
 
-    const now = new Date();
     const isLate = now > assignment.dueDate;
-    if (isLate && !assignment.allowLate) {
-      return NextResponse.json(
-        { error: "Topshirish muddati tugagan va kechikib topshirishga ruxsat berilmagan" },
-        { status: 400 }
-      );
+    const file = await prepareSubmissionFile(formData.get("file"));
+    if (!file && !externalUrl && !comment) {
+      return NextResponse.json({ error: "Kamida fayl, havola yoki izoh kiritishingiz shart" }, { status: 400 });
     }
 
-    let fileName: string | null = null;
-    let filePath: string | null = null;
-    let fileSize: number | null = null;
-    if (file instanceof File && file.size > 0) {
-      const saved = await saveUploadedFile(file, "submissions");
-      fileName = saved.fileName;
-      filePath = saved.filePath;
-      fileSize = saved.fileSize;
-    }
-
-    if (!filePath && !externalUrl && !comment) {
-      return NextResponse.json(
-        { error: "Kamida fayl, havola yoki izoh kiritishingiz shart" },
-        { status: 400 }
-      );
-    }
-
-    const existing = await prisma.submission.findUnique({
-      where: {
-        assignmentId_studentId: {
-          assignmentId: assignment.id,
-          studentId: user.id,
-        },
-      },
-    });
-
-    const nextVersion = existing ? existing.version + 1 : 1;
-    const nextStatus = existing
-      ? SubmissionStatus.RESUBMITTED
-      : SubmissionStatus.SUBMITTED;
-
-    const submission = await prisma.$transaction(async (tx) => {
-      const upserted = existing
+    const fileMetadata = file ? { fileName: file.name, filePath: file.path, fileSize: file.size } : {};
+    const submittedData = { comment, externalUrl, isLate, submittedAt: now, ...fileMetadata };
+    const key = { assignmentId: assignment.id, studentId: user.id };
+    const saveSubmission = () => prisma.$transaction(async (tx) => {
+      const existing = await tx.submission.findUnique({
+        where: { assignmentId_studentId: key },
+      });
+      if (existing && requestId) {
+        const saved = await tx.submissionVersion.findUnique({
+          where: { submissionId_requestId: { submissionId: existing.id, requestId } },
+          select: { version: true },
+        });
+        if (saved) return { submission: existing, acceptedVersion: saved.version, replayed: true };
+      }
+      if (!canSubmitAssignment(existing?.status ?? null, assignment, now)) {
+        throw new SubmissionUploadError(
+          existing ? "Qayta topshirish uchun o'qituvchi ishni qaytarishi kerak" :
+            "Topshirish muddati tugagan va kechikib topshirishga ruxsat berilmagan",
+          existing ? 403 : 400
+        );
+      }
+      const submission = existing
         ? await tx.submission.update({
-            where: { id: existing.id },
+            where: { id: existing.id, status: SubmissionStatus.RETURNED, gradingRevision: existing.gradingRevision, version: existing.version },
             data: {
-              version: nextVersion,
-              comment,
-              externalUrl,
-              fileName: fileName ?? existing.fileName,
-              filePath: filePath ?? existing.filePath,
-              fileSize: fileSize ?? existing.fileSize,
-              isLate,
-              status: nextStatus,
-              submittedAt: now,
+              ...submittedData,
+              version: { increment: 1 },
+              status: SubmissionStatus.RESUBMITTED,
+              score: null,
+              gradedAt: null,
+              gradedById: null,
             },
           })
-        : await tx.submission.create({
-            data: {
-              assignmentId: assignment.id,
-              studentId: user.id,
-              version: 1,
-              comment,
-              externalUrl,
-              fileName,
-              filePath,
-              fileSize,
-              isLate,
-              status: SubmissionStatus.SUBMITTED,
-              submittedAt: now,
-            },
-          });
+        : await tx.submission.create({ data: { ...key, ...submittedData } });
 
+      if (existing) await preserveLegacyGrade(tx, existing);
+      if (file) await tx.submissionFile.create({ data: { ...file, submissionId: submission.id } });
       await tx.submissionVersion.create({
         data: {
-          submissionId: upserted.id,
-          version: nextVersion,
+          submissionId: submission.id,
+          version: submission.version,
+          requestId,
           comment,
           externalUrl,
-          fileName,
-          filePath,
-          fileSize,
+          fileName: submission.fileName,
+          filePath: submission.filePath,
+          fileSize: submission.fileSize,
           isLate,
         },
       });
+      await createNotification({
+        userId: assignment.teacherId,
+        assignmentId: assignment.id,
+        type: NotificationType.SUBMISSION_RECEIVED,
+        title: submission.version > 1 ? "Vazifa qayta topshirildi" : "Yangi topshiriq kelib tushdi",
+        message: `${user.fullName} "${assignment.title}" vazifasini (v${submission.version}) yukladi.`,
+        link: assignmentNotificationLink("TEACHER", assignment.id, submission.id),
+      }, tx);
+      return { submission, acceptedVersion: submission.version, replayed: false };
+    }, { timeout: 15_000 });
 
-      return upserted;
+    const result = await saveSubmission().catch((error: unknown) => {
+      // Re-evaluate permissions if a concurrent first submission created the row.
+      if (error instanceof Prisma.PrismaClientKnownRequestError &&
+          (error.code === "P2002" || (requestId && error.code === "P2025"))) {
+        return saveSubmission();
+      }
+      throw error;
     });
-
-    await createNotification({
-      userId: assignment.teacherId,
-      type: NotificationType.SUBMISSION_RECEIVED,
-      title: existing ? "Vazifa qayta topshirildi" : "Yangi topshiriq kelib tushdi",
-      message: `${user.fullName} "${assignment.title}" vazifasini (v${nextVersion}) yukladi.`,
-      link: "/teacher?tab=grading",
-    });
-
-    return NextResponse.json({ submission }, { status: existing ? 200 : 201 });
+    return NextResponse.json(result, { status: !result.replayed && result.acceptedVersion === 1 ? 201 : 200 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Yuklashda xatolik";
+    if (err instanceof SubmissionUploadError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return NextResponse.json({ error: "Ish holati o'zgargan. Sahifani yangilang." }, { status: 409 });
+    }
     await reportSystemIssue({
       title: "Talaba topshirig'ini yuklash xatoligi",
-      message,
+      message: err instanceof Error ? err.message : "Noma'lum yuklash xatoligi",
       severity: IssueSeverity.WARNING,
       source: IssueSource.API_SERVER,
       route: "/api/student/submissions",
       method: "POST",
-      statusCode: 400,
+      statusCode: 500,
       stackTrace: err instanceof Error ? err.stack : null,
       reportedByUserId: user.id,
-    });
-    return NextResponse.json({ error: message }, { status: 400 });
+    }).catch(() => {});
+    return NextResponse.json({ error: "Topshiriqni saqlashda xatolik" }, { status: 500 });
   }
 }

@@ -17,7 +17,7 @@ export async function GET() {
     criticalIssuesCount,
     resolvedIssuesCount,
     assignmentsCount,
-    submissionsCount,
+    submissionGroups,
     kpiEntriesCount,
     diagnostics,
   ] = await Promise.all([
@@ -69,12 +69,34 @@ export async function GET() {
       where: { status: IssueStatus.RESOLVED },
     }),
     prisma.assignment.count(),
-    prisma.submission.count(),
+    prisma.submission.groupBy({ by: ["status", "isLate"], _count: { _all: true } }),
     prisma.kpiEntry.count(),
     runSystemDiagnostics(),
   ]);
 
   const activeUsersCount = users.filter((u) => u.isActive).length;
+  const grading = { awaitingReview: 0, inReview: 0, graded: 0, returned: 0, late: 0 };
+  let submissionsCount = 0;
+  for (const group of submissionGroups) {
+    const count = group._count._all;
+    submissionsCount += count;
+    if (group.isLate) grading.late += count;
+    switch (group.status) {
+      case "SUBMITTED":
+      case "RESUBMITTED":
+        grading.awaitingReview += count;
+        break;
+      case "IN_REVIEW":
+        grading.inReview += count;
+        break;
+      case "GRADED":
+        grading.graded += count;
+        break;
+      case "RETURNED":
+        grading.returned += count;
+        break;
+    }
+  }
 
   return NextResponse.json({
     stats: {
@@ -86,6 +108,7 @@ export async function GET() {
       inactiveUsersCount: users.length - activeUsersCount,
       assignmentsCount,
       submissionsCount,
+      grading,
       kpiEntriesCount,
       auditLogsCount: auditLogs.length,
     },

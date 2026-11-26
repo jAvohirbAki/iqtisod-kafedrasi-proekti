@@ -25,6 +25,7 @@ export async function GET() {
       },
     }),
     prisma.assignment.findMany({
+      omit: { publishRequestId: true },
       where: { groupId: user.groupId },
       orderBy: { dueDate: "asc" },
       include: {
@@ -33,7 +34,7 @@ export async function GET() {
         submissions: {
           where: { studentId: user.id },
           include: {
-            versions: { orderBy: { version: "desc" } },
+            versions: { omit: { requestId: true }, orderBy: { version: "desc" } },
           },
         },
       },

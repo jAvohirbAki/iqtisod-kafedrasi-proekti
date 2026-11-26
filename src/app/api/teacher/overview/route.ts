@@ -6,19 +6,23 @@ export async function GET() {
   const { user, errorResponse } = await requireApiAuth(["TEACHER"]);
   if (errorResponse) return errorResponse;
 
-  const [teachings, assignments, kpiCriteria, kpiEntries] = await Promise.all([
-    prisma.subjectTeacher.findMany({
-      where: { teacherId: user.id },
-      include: {
-        subject: true,
-        group: {
-          include: { _count: { select: { students: true } } },
-        },
+  const teachings = await prisma.subjectTeacher.findMany({
+    where: { teacherId: user.id },
+    include: {
+      subject: true,
+      group: {
+        include: { _count: { select: { students: { where: { isActive: true, role: "STUDENT" } } } } },
       },
-      orderBy: { createdAt: "asc" },
-    }),
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  const [assignments, kpiCriteria, kpiEntries] = await Promise.all([
     prisma.assignment.findMany({
-      where: { teacherId: user.id },
+      omit: { publishRequestId: true },
+      where: {
+        teacherId: user.id,
+        OR: teachings.map(({ subjectId, groupId }) => ({ subjectId, groupId })),
+      },
       orderBy: { createdAt: "desc" },
       include: {
         subject: { select: { id: true, name: true, code: true } },
@@ -26,14 +30,24 @@ export async function GET() {
           select: {
             id: true,
             name: true,
-            _count: { select: { students: true } },
+            _count: { select: { students: { where: { isActive: true, role: "STUDENT" } } } },
+            students: {
+              where: { isActive: true, role: "STUDENT" },
+              select: { id: true, fullName: true },
+              orderBy: [{ fullName: "asc" }, { id: "asc" }],
+            },
           },
         },
         submissions: {
+          where: { student: { isActive: true, role: "STUDENT" } },
           orderBy: { submittedAt: "desc" },
           include: {
-            student: { select: { id: true, fullName: true, email: true } },
-            versions: { orderBy: { version: "desc" } },
+            student: { select: { id: true, fullName: true, email: true, groupId: true } },
+            versions: { omit: { requestId: true }, orderBy: { version: "desc" } },
+            grades: {
+              orderBy: { revision: "desc" },
+              include: { grader: { select: { fullName: true } } },
+            },
           },
         },
       },
@@ -73,7 +87,10 @@ export async function GET() {
 
   return NextResponse.json({
     teachings,
-    assignments,
+    assignments: assignments.map((assignment) => ({
+      ...assignment,
+      submissions: assignment.submissions.filter((submission) => submission.student.groupId === assignment.groupId),
+    })),
     kpiCriteria,
     kpiEntries,
     kpiSummary: {

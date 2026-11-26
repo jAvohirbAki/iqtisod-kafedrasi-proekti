@@ -1,23 +1,11 @@
 import { randomUUID } from "crypto";
 import fs from "fs/promises";
 import path from "path";
+import { SUBMISSION_FILE_TYPES } from "./submission-file-formats";
 
 export const UPLOAD_ROOT = path.resolve(process.cwd(), "storage", "uploads");
 
-export const ALLOWED_EXTENSIONS = new Set([
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".zip",
-  ".rar",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ".txt",
-  ".xlsx",
-  ".pptx",
-]);
+export const ALLOWED_EXTENSIONS = new Set(Object.keys(SUBMISSION_FILE_TYPES));
 
 export const MAX_UPLOAD_BYTES = Number(
   process.env.MAX_UPLOAD_BYTES ?? 20 * 1024 * 1024
@@ -44,7 +32,7 @@ export function validateUploadFile(file: { name: string; size: number }): string
 
 export async function saveUploadedFile(
   file: File,
-  folder: "assignments" | "submissions" | "kpi"
+  folder: "assignments" | "kpi"
 ): Promise<{ fileName: string; filePath: string; fileSize: number }> {
   const validationError = validateUploadFile({ name: file.name, size: file.size });
   if (validationError) {

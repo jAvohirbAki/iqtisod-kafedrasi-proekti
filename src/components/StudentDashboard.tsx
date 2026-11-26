@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   CheckCircle2,
   Clock,
@@ -10,7 +11,11 @@ import {
   Upload,
 } from "lucide-react";
 import { PortalShell, ShellUser } from "./PortalShell";
-import { CONTROL_TYPE_LABELS, SUBMISSION_STATUS_LABELS } from "@/lib/domain";
+import { canSubmitAssignment, CONTROL_TYPE_LABELS, getSubmissionStatusLabel } from "@/lib/domain";
+import { SUBMISSION_FILE_ACCEPT, SUBMISSION_FILE_LIMIT_MB } from "@/lib/submission-file-formats";
+import { useFormUpload } from "@/lib/use-form-upload";
+import { UploadProgress } from "./UploadProgress";
+import { PortalEmptyState } from "./PortalEmptyState";
 import type { ControlType, SubmissionStatus } from "@prisma/client";
 
 interface StudentOverviewData {
@@ -74,7 +79,10 @@ interface StudentOverviewData {
 }
 
 export function StudentDashboard({ user }: { user: ShellUser }) {
-  const [activeTab, setActiveTab] = useState("tasks");
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const requestedAssignment = searchParams.get("assignment");
+  const [activeTab, setActiveTab] = useState(requestedTab === "grades" ? "grades" : "tasks");
   const [data, setData] = useState<StudentOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: "ok" | "err"; text: string } | null>(
@@ -86,39 +94,42 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
   const [subComment, setSubComment] = useState("");
   const [subUrl, setSubUrl] = useState("");
   const [subFile, setSubFile] = useState<File | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const submissionUpload = useFormUpload();
+  const submitting = submissionUpload.busy;
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/student/overview");
-      if (res.ok) {
-        const json = await res.json();
-        setData(json);
-      }
+      const res = await fetch("/api/student/overview", { signal });
+      if (!res.ok) throw new Error();
+      const json: StudentOverviewData = await res.json();
+      if (!signal?.aborted) setData(json);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let active = true;
-    fetch("/api/student/overview")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((json) => {
-        if (active && json) setData(json);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+    const controller = new AbortController();
+    void loadData(controller.signal).catch(() => {});
+    return () => controller.abort();
+  }, [loadData]);
+
+  const linkedAssignmentId = data?.assignments.find(({ id }) => id === requestedAssignment)?.id;
+  useEffect(() => {
+    if (activeTab !== "tasks" || !linkedAssignmentId) return;
+    const target = document.getElementById(`assignment-${linkedAssignmentId}`);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "start" });
+  }, [activeTab, linkedAssignmentId]);
 
   async function handleSubmitAssignment(e: React.FormEvent, assignmentId: string) {
     e.preventDefault();
+    if (submitting) return;
     setFeedbackMsg(null);
-    setSubmitting(true);
+    if (subFile && subFile.size > SUBMISSION_FILE_LIMIT_MB * 1024 * 1024) {
+      setFeedbackMsg({ type: "err", text: `Fayl hajmi ${SUBMISSION_FILE_LIMIT_MB} MiB dan oshmasligi kerak` });
+      return;
+    }
     try {
       const fd = new FormData();
       fd.append("assignmentId", assignmentId);
@@ -126,10 +137,10 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
       fd.append("externalUrl", subUrl);
       if (subFile) fd.append("file", subFile);
 
-      const res = await fetch("/api/student/submissions", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok) {
-        setFeedbackMsg({ type: "err", text: json.error ?? "Topshirishda xatolik" });
+      const result = await submissionUpload.send<{ replayed: boolean }>("/api/student/submissions", fd);
+      if (!result) return;
+      if (!result.ok) {
+        setFeedbackMsg({ type: "err", text: result.data?.error ?? "Vazifani topshirib bo'lmadi." });
         return;
       }
       setActiveAssignmentId(null);
@@ -138,11 +149,14 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
       setSubFile(null);
       setFeedbackMsg({
         type: "ok",
-        text: "Vazifangiz muvaffaqiyatli yuklandi va o'qituvchiga xabar yuborildi",
+        text: result.data?.replayed ? "Bu versiya allaqachon topshirilgan." :
+          "Vazifangiz saqlandi va o'qituvchiga xabar yuborildi.",
       });
-      await loadData();
-    } finally {
-      setSubmitting(false);
+      await loadData().catch(() => {
+        setFeedbackMsg({ type: "ok", text: "Vazifa yuborildi. Ro'yxatni ko'rish uchun sahifani yangilang." });
+      });
+    } catch (error) {
+      setFeedbackMsg({ type: "err", text: error instanceof Error ? error.message : "Vazifani yuborib bo'lmadi." });
     }
   }
 
@@ -162,6 +176,7 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
     >
       {feedbackMsg && (
         <div
+          role={feedbackMsg.type === "err" ? "alert" : "status"}
           className={`mb-4 rounded-xl border px-4 py-3 text-sm font-medium ${
             feedbackMsg.type === "ok"
               ? "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -213,18 +228,38 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
           Vazifalar yuklanmoqda...
         </div>
       ) : null}
+      {!loading && !data && (
+        <PortalEmptyState
+          title="Vazifalarni yuklab bo‘lmadi"
+          description="Internet aloqasini tekshirib, qayta urinib ko‘ring."
+          action={<button type="button" className="text-sm font-semibold text-indigo-700 underline" onClick={() => {
+            setLoading(true);
+            void loadData().catch(() => {});
+          }}>Qayta yuklash</button>}
+        />
+      )}
 
       {data && activeTab === "tasks" && (
         <div className="space-y-4">
+          {requestedAssignment && !linkedAssignmentId && (
+            <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Havoladagi vazifa joriy ro&apos;yxatda mavjud emas.
+            </p>
+          )}
+          {!data.assignments.length && <PortalEmptyState title="Hali vazifa yo‘q" description="Guruhingizga yangi vazifa berilganda u shu yerda ko‘rinadi." />}
           {data.assignments.map((a) => {
             const sub = a.submission;
-            const isExpired = new Date() > new Date(a.dueDate);
+            const now = new Date();
+            const isExpired = now > new Date(a.dueDate);
+            const canSubmit = canSubmitAssignment(sub?.status ?? null, a, now);
             const isOpen = activeAssignmentId === a.id;
 
             return (
               <div
                 key={a.id}
-                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                id={`assignment-${a.id}`}
+                tabIndex={-1}
+                className={`scroll-mt-36 break-words rounded-2xl border bg-white p-4 shadow-sm sm:p-5 ${linkedAssignmentId === a.id ? "border-indigo-400 ring-2 ring-indigo-100" : "border-slate-200"}`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="max-w-3xl space-y-1.5">
@@ -245,7 +280,7 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                               : "bg-sky-100 text-sky-800"
                           }`}
                         >
-                          {SUBMISSION_STATUS_LABELS[sub.status]} (v{sub.version})
+                          {getSubmissionStatusLabel(sub)} (v{sub.version})
                         </span>
                       ) : (
                         <span
@@ -255,7 +290,12 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                               : "bg-amber-100 text-amber-800"
                           }`}
                         >
-                          {isExpired ? "Muddati o'tgan" : "Topshirilmagan"}
+                          {getSubmissionStatusLabel(null)}
+                        </span>
+                      )}
+                      {sub?.isLate && sub.status !== "SUBMITTED" && sub.status !== "RESUBMITTED" && (
+                        <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700">
+                          Kechiktirib topshirilgan
                         </span>
                       )}
                     </div>
@@ -287,16 +327,18 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                     <div className="rounded-xl bg-slate-100 px-3 py-1.5 text-right">
                       <p className="text-[11px] text-slate-500">Ball</p>
                       <p className="text-sm font-bold text-slate-900">
-                        {sub?.score !== null && sub?.score !== undefined
+                        {sub?.status === "GRADED" && sub.score !== null
                           ? `${sub.score} / ${a.maxScore}`
                           : `Max ${a.maxScore}`}
                       </p>
                     </div>
 
-                    {(!isExpired || a.allowLate) && (
+                    {canSubmit && (
                       <button
                         type="button"
+                        disabled={submitting}
                         onClick={() => {
+                          if (activeAssignmentId && activeAssignmentId !== a.id) submissionUpload.resetRequest();
                           setActiveAssignmentId(isOpen ? null : a.id);
                           setSubComment(sub?.comment ?? "");
                           setSubUrl(sub?.externalUrl ?? "");
@@ -311,9 +353,14 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                   </div>
                 </div>
 
+                {sub?.status === "RETURNED" && (
+                  <p className="mt-3 text-xs font-semibold text-amber-800">
+                    O&apos;qituvchi qayta topshirishga ruxsat berdi. Yangi versiyani yuborishingiz mumkin.
+                  </p>
+                )}
                 {sub?.feedback && (
                   <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-xs text-emerald-900">
-                    <span className="font-bold">O&apos;qituvchi izohi:</span> {sub.feedback}
+                    <span className="font-bold">{sub.status === "RESUBMITTED" || sub.status === "IN_REVIEW" ? "Oldingi izoh" : "O'qituvchi izohi"}:</span> {sub.feedback}
                   </div>
                 )}
 
@@ -344,7 +391,7 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                             <a
                               href={`/api/files/download?path=${encodeURIComponent(
                                 v.filePath
-                              )}&name=${encodeURIComponent(v.fileName ?? "fayl")}`}
+                              )}`}
                               className="text-emerald-700 hover:underline inline-flex items-center gap-0.5"
                             >
                               <FileText className="h-3 w-3" /> {v.fileName}
@@ -356,9 +403,11 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                   </div>
                 )}
 
-                {isOpen && (
+                {isOpen && canSubmit && (
                   <form
                     onSubmit={(e) => handleSubmitAssignment(e, a.id)}
+                    onChange={submissionUpload.resetRequest}
+                    aria-busy={submitting}
                     className="mt-4 border-t border-slate-200 pt-4 grid gap-3 sm:grid-cols-2"
                   >
                     <div className="sm:col-span-2">
@@ -366,6 +415,7 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                         Izoh / Bajarilgan ish tavsifi
                       </label>
                       <textarea
+                        disabled={submitting}
                         rows={2}
                         value={subComment}
                         onChange={(e) => setSubComment(e.target.value)}
@@ -379,6 +429,7 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                       </label>
                       <input
                         type="url"
+                        disabled={submitting}
                         value={subUrl}
                         onChange={(e) => setSubUrl(e.target.value)}
                         placeholder="https://github.com/..."
@@ -387,19 +438,24 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                        Fayl yuklash (PDF, DOCX, ZIP, rasm — max 20MB)
+                        Fayl yuklash (PDF, DOCX, DOC, arxiv, jadval yoki rasm · {SUBMISSION_FILE_LIMIT_MB} MiB gacha)
                       </label>
                       <input
                         type="file"
+                        disabled={submitting}
+                        accept={SUBMISSION_FILE_ACCEPT}
                         onChange={(e) => setSubFile(e.target.files?.[0] ?? null)}
                         className="w-full text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-indigo-700"
                       />
                     </div>
-                    <div className="sm:col-span-2 flex items-center justify-between pt-1">
-                      {isExpired && a.allowLate ? (
+                    {submitting && <div className="sm:col-span-2"><UploadProgress progress={submissionUpload.progress} /></div>}
+                    <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2 pt-1">
+                      {isExpired ? (
                         <span className="inline-flex items-center gap-1 text-xs text-amber-700">
                           <Clock className="h-3.5 w-3.5" />
-                          Muddat o&apos;tgan: -{a.latePenaltyPct}% jarima qo&apos;llanilishi mumkin
+                          {a.latePenaltyPct > 0
+                            ? `Muddat o'tgan · −${a.latePenaltyPct}% jarima qo'llanilishi mumkin`
+                            : "Muddat o'tgan"}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-xs text-emerald-700">
@@ -429,7 +485,9 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
             <GraduationCap className="h-5 w-5 text-indigo-600" />
             Fanlar kesimida reyting daftarchasi (100 ballik kredit-modul)
           </h2>
-          <div className="overflow-x-auto">
+          {!data.gradebook.length ? (
+            <PortalEmptyState title="Reyting daftarchasi bo‘sh" description="Guruhingizga fan biriktirilganda natijalar shu yerda ko‘rinadi." />
+          ) : <div className="overflow-x-auto">
             <table className="w-full text-left text-xs sm:text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500">
@@ -480,7 +538,7 @@ export function StudentDashboard({ user }: { user: ShellUser }) {
                 ))}
               </tbody>
             </table>
-          </div>
+          </div>}
         </div>
       )}
     </PortalShell>

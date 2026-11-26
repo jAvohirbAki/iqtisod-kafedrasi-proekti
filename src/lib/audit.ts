@@ -1,4 +1,4 @@
-import { NotificationType } from "@prisma/client";
+import { NotificationType, type Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 
 export async function recordAuditLog(params: {
@@ -9,8 +9,8 @@ export async function recordAuditLog(params: {
   oldValue?: unknown;
   newValue?: unknown;
   reason?: string;
-}) {
-  return prisma.auditLog.create({
+}, db: Pick<Prisma.TransactionClient, "auditLog"> = prisma) {
+  return db.auditLog.create({
     data: {
       actorId: params.actorId,
       action: params.action,
@@ -25,14 +25,16 @@ export async function recordAuditLog(params: {
 
 export async function createNotification(params: {
   userId: string;
+  assignmentId?: string;
   type: NotificationType;
   title: string;
   message: string;
   link?: string;
-}) {
-  return prisma.notification.create({
+}, db: Pick<Prisma.TransactionClient, "notification"> = prisma) {
+  return db.notification.create({
     data: {
       userId: params.userId,
+      assignmentId: params.assignmentId,
       type: params.type,
       title: params.title,
       message: params.message,

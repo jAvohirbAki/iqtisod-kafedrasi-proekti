@@ -103,9 +103,26 @@ export const CONTROL_TYPE_LABELS: Record<ControlType, string> = {
 export const SUBMISSION_STATUS_LABELS: Record<SubmissionStatus, string> = {
   SUBMITTED: "Topshirilgan",
   RESUBMITTED: "Qayta topshirilgan",
+  IN_REVIEW: "Tekshirilmoqda",
   GRADED: "Baholangan",
   RETURNED: "Qayta ishlashga qaytarilgan",
 };
+
+export function getSubmissionStatusLabel(submission: { status: SubmissionStatus; isLate: boolean } | null) {
+  if (!submission) return "Topshirilmagan";
+  if (submission.isLate && (submission.status === "SUBMITTED" || submission.status === "RESUBMITTED")) {
+    return "Kechiktirib topshirilgan";
+  }
+  return SUBMISSION_STATUS_LABELS[submission.status];
+}
+
+export function canSubmitAssignment(
+  status: SubmissionStatus | null,
+  assignment: { dueDate: string | Date; allowLate: boolean },
+  now: Date
+) {
+  return status === "RETURNED" || (status === null && (assignment.allowLate || now <= new Date(assignment.dueDate)));
+}
 
 export const KPI_BLOCK_META: Record<
   KpiBlock,

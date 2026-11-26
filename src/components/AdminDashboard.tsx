@@ -24,6 +24,7 @@ import {
   UserX,
 } from "lucide-react";
 import { PortalShell, ShellUser } from "./PortalShell";
+import { PortalEmptyState } from "./PortalEmptyState";
 import {
   ISSUE_SEVERITY_LABELS,
   ISSUE_SOURCE_LABELS,
@@ -86,6 +87,7 @@ interface AdminOverviewData {
     inactiveUsersCount: number;
     assignmentsCount: number;
     submissionsCount: number;
+    grading: { awaitingReview: number; inReview: number; graded: number; returned: number; late: number };
     kpiEntriesCount: number;
     auditLogsCount: number;
   };
@@ -168,20 +170,22 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
     groupId: "",
   });
 
-  const loadData = useCallback(async () => {
-    try {
-      const res = await fetch("/api/admin/overview");
-      if (res.ok) {
-        const json = await res.json();
-        setData(json);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const loadData = useCallback((signal?: AbortSignal) =>
+    fetch("/api/admin/overview", { signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((result) => {
+        if (result && !signal?.aborted) setData(result);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!signal?.aborted) setLoading(false);
+      }),
+  []);
 
   useEffect(() => {
-    loadData();
+    const controller = new AbortController();
+    void loadData(controller.signal);
+    return () => controller.abort();
   }, [loadData]);
 
   const filteredIssues = useMemo(() => {
@@ -354,6 +358,7 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
       badge: data?.stats.openIssuesCount ?? 0,
     },
     { id: "diagnostics", label: "Tizim diagnostikasi" },
+    { id: "grading", label: "Vazifalar va baholash" },
     { id: "users", label: "Foydalanuvchilar", badge: data?.stats.totalUsersCount ?? 0 },
     { id: "audit", label: "Audit jurnali" },
   ];
@@ -365,11 +370,20 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
       activeTab={activeTab}
       onTabChange={setActiveTab}
     >
-      {loading || !data ? (
+      {loading ? (
         <div className="flex items-center justify-center py-20 text-sm text-slate-500">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           Tizim ma&apos;lumotlari yuklanmoqda...
         </div>
+      ) : !data ? (
+        <PortalEmptyState
+          title="Admin paneli ma’lumotlarini yuklab bo‘lmadi"
+          description="Internet aloqasini tekshirib, qayta urinib ko‘ring."
+          action={<button type="button" className="text-sm font-semibold text-indigo-700 underline" onClick={() => {
+            setLoading(true);
+            void loadData();
+          }}>Qayta yuklash</button>}
+        />
       ) : (
         <div className="space-y-6">
           {/* Top KPI & Health Cards */}
@@ -606,9 +620,7 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
 
               <div className="space-y-3">
                 {filteredIssues.length === 0 ? (
-                  <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
-                    Tanlangan filtrlar bo&apos;yicha tizim muammolari topilmadi.
-                  </div>
+                  <PortalEmptyState title="Tizim muammolari topilmadi" description="Boshqa natijalarni ko‘rish uchun qidiruv yoki filtrlarni o‘zgartiring." />
                 ) : (
                   filteredIssues.map((issue) => {
                     const expanded = expandedIssueId === issue.id;
@@ -875,6 +887,37 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
             </div>
           )}
 
+          {activeTab === "grading" && (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-bold text-slate-900">Topshiriqlar statistikasi</h2>
+                <button
+                  type="button"
+                  onClick={() => void loadData()}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Yangilash
+                </button>
+              </div>
+              <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  ["Jami vazifalar", data.stats.assignmentsCount],
+                  ["Topshirilgan ishlar", data.stats.submissionsCount],
+                  ["Kechiktirib topshirilgan", data.stats.grading.late],
+                  ["Tekshiruvni kutmoqda", data.stats.grading.awaitingReview],
+                  ["Tekshirilmoqda", data.stats.grading.inReview],
+                  ["Baholangan", data.stats.grading.graded],
+                  ["Qayta ishlashga qaytarilgan", data.stats.grading.returned],
+                ].map(([label, count]) => (
+                  <div key={label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <dt className="text-xs font-medium text-slate-600">{label}</dt>
+                    <dd className="mt-1 text-xl font-bold text-slate-900">{count}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
+
           {/* TAB 3: USER MANAGEMENT */}
           {activeTab === "users" && (
             <div className="grid gap-6 lg:grid-cols-3">
@@ -974,6 +1017,7 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
                 </div>
 
                 <div className="divide-y divide-slate-100">
+                  {!filteredUsers.length && <PortalEmptyState title="Foydalanuvchi topilmadi" description="Boshqa ism yoki elektron pochta bo‘yicha qidiring." />}
                   {filteredUsers.map((u) => (
                     <div key={u.id} className="py-3 space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1094,6 +1138,7 @@ export function AdminDashboard({ user }: { user: ShellUser }) {
                 </h2>
               </div>
               <div className="divide-y divide-slate-100">
+                {!data.auditLogs.length && <PortalEmptyState title="Audit yozuvlari hali yo‘q" />}
                 {data.auditLogs.map((log) => (
                   <div key={log.id} className="py-3 text-xs space-y-1">
                     <div className="flex flex-wrap items-center justify-between gap-2">
